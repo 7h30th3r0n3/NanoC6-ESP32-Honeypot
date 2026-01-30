@@ -5,13 +5,29 @@
 #include <ESPAsyncWebServer.h>
 #include <ArduinoJson.h>
 #include <M5Unified.h>
+#include <algorithm>
+#include <vector>
 
 String ssid, password, WebhookURL;
 const char* configPath = "/config.json";
 const char* logPath = "/honeypot_logs.txt";
 const char* indexPath = "/index.html";
 
+WiFiServer ftpServer(21);
+WiFiServer sshServer(22);
 WiFiServer honeypotServer(23);
+WiFiServer smtpServer(25);
+WiFiServer dnsServer(53);
+WiFiServer pop3Server(110);
+WiFiServer imapServer(143);
+WiFiServer httpServer(443);
+WiFiServer smbServer(445);
+WiFiServer mysqlServer(3306);
+WiFiServer rdpServer(3389);
+WiFiServer vncServer(5900);
+WiFiServer ahttpServer(8080);
+
+std::vector<uint16_t> enabledPorts;
 AsyncWebServer webServer(80);
 
 void createFileIfMissing(const char* path, const char* content) {
@@ -34,7 +50,7 @@ void initSPIFFS() {
   }
 
   // Création automatique des fichiers de base
-  createFileIfMissing(configPath, "{\"ssid\":\"\",\"password\":\"\",\"webhook\":\"\"}");
+  createFileIfMissing(configPath, "{\"ssid\":\"\",\"password\":\"\",\"webhook\":\"\",\"ports\":[21,22,23,25,53,110,143,443,445,3306,3389,5900,8080]}");
   createFileIfMissing(logPath, "");
   createFileIfMissing(indexPath,
   "<!DOCTYPE html><html><head><meta charset='UTF-8'><title>Honeypot Config</title>"
@@ -44,7 +60,8 @@ void initSPIFFS() {
   ".container{max-width:500px;margin:auto;}"
   "form, .actions{background:#fff;padding:20px;border-radius:10px;box-shadow:0 0 10px rgba(0,0,0,0.1);margin-bottom:20px;}"
   "label{display:block;margin-top:10px;font-weight:bold;}"
-  "input{width:100%;padding:10px;margin-top:5px;box-sizing:border-box;border:1px solid #ccc;border-radius:5px;}"
+  "input:not([type=checkbox]){width:100%;padding:10px;margin-top:5px;box-sizing:border-box;border:1px solid #ccc;border-radius:5px;font-family:inherit;}"
+  "input[type=checkbox]{width:auto;height:auto;padding:0;margin-right:8px;vertical-align:middle;}"
   "button{margin-top:10px;width:100%;padding:12px;border:none;border-radius:5px;cursor:pointer;font-size:16px;}"
   "#save{background:#28a745;color:white;}#save:hover{background:#218838;}"
   "#reboot{background:#007bff;color:white;}#reboot:hover{background:#0069d9;}"
@@ -58,6 +75,22 @@ void initSPIFFS() {
   "<label>Wi-Fi SSID</label><input name='ssid' required>"
   "<label>Wi-Fi Password</label><input name='password' type='password' required>"
   "<label>Webhook URL</label><input name='webhook'>"
+  "<label>Ports to enable</label>"
+  "<div style='max-height:200px;overflow:auto;border:1px solid #ccc;padding:10px;border-radius:5px;'>"
+  "<label><input type='checkbox' name='ports' value='21'> FTP (21)</label>"
+  "<label><input type='checkbox' name='ports' value='22'> SSH (22)</label>"
+  "<label><input type='checkbox' name='ports' value='23'> Telnet (23)</label>"
+  "<label><input type='checkbox' name='ports' value='25'> SMTP (25)</label>"
+  "<label><input type='checkbox' name='ports' value='53'> DNS (53)</label>"
+  "<label><input type='checkbox' name='ports' value='110'> POP3 (110)</label>"
+  "<label><input type='checkbox' name='ports' value='143'> IMAP (143)</label>"
+  "<label><input type='checkbox' name='ports' value='443'> HTTPS (443)</label>"
+  "<label><input type='checkbox' name='ports' value='445'> SMB (445)</label>"
+  "<label><input type='checkbox' name='ports' value='3306'> MySQL (3306)</label>"
+  "<label><input type='checkbox' name='ports' value='3389'> RDP (3389)</label>"
+  "<label><input type='checkbox' name='ports' value='5900'> VNC (5900)</label>"
+  "<label><input type='checkbox' name='ports' value='8080'> AHTTP (8080)</label>"
+  "</div>"
   "<button id='save' type='submit'>Save Configuration</button>"
   "</form>"
   "<div class='actions'>"
@@ -68,10 +101,26 @@ void initSPIFFS() {
   "<pre id='output'></pre>"
   "</div></div>"
   "<script>"
-  "fetch('/config').then(r=>r.json()).then(c=>{for(let k in c)document.querySelector(`[name=${k}]`).value=c[k];});"
+  "fetch('/config').then(r=>r.json()).then(c=>{"
+  "for(let k in c){"
+  "  if(k==='ports'){"
+  "    c[k].forEach(p=>{"
+  "      let cb=document.querySelector(`input[name=ports][value='${p}']`);"
+  "      if(cb)cb.checked=true;"
+  "    });"
+  "  }else{"
+  "    let el=document.querySelector(`[name=${k}]`);"
+  "    if(el)el.value=c[k];"
+  "  }"
+  "}});"
   "document.getElementById('form').onsubmit=e=>{e.preventDefault();"
-  "fetch('/config',{method:'POST',headers:{'Content-Type':'application/json'},"
-  "body:JSON.stringify(Object.fromEntries(new FormData(e.target).entries()))})"
+  "let form=e.target;"
+  "let data=new FormData(form);"
+  "let ports=[];"
+  "form.querySelectorAll('input[name=ports]:checked').forEach(cb=>ports.push(parseInt(cb.value)));"
+  "let obj=Object.fromEntries(Array.from(data.entries()).filter(([k])=>k!=='ports'));"
+  "obj.ports=ports;"
+  "fetch('/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(obj)})"
   ".then(()=>alert('Configuration saved.'));};"
   "document.getElementById('reboot').onclick=()=>{"
   "fetch('/reboot',{method:'POST'}).then(()=>alert('Rebooting...'));};"
@@ -90,7 +139,7 @@ bool loadConfig() {
   File file = SPIFFS.open(configPath, "r");
   if (!file || file.size() == 0) return false;
 
-  StaticJsonDocument<512> doc;
+  StaticJsonDocument<1024> doc;
   DeserializationError err = deserializeJson(doc, file);
   file.close();
   if (err) return false;
@@ -98,6 +147,17 @@ bool loadConfig() {
   ssid = doc["ssid"].as<String>();
   password = doc["password"].as<String>();
   WebhookURL = doc["webhook"].as<String>();
+
+  enabledPorts.clear();
+  if (doc["ports"].is<JsonArray>()) {
+    for (JsonVariant port : doc["ports"].as<JsonArray>()) {
+      enabledPorts.push_back(port.as<uint16_t>());
+    }
+  } else {
+    const uint16_t defaults[] = {21,22,23,25,53,110,143,443,445,3306,3389,5900,8080};
+    enabledPorts.assign(defaults, defaults + (sizeof(defaults) / sizeof(defaults[0])));
+  }
+
   return ssid.length() > 0 && password.length() > 0;
 }
 
@@ -161,7 +221,6 @@ void setupWebUI() {
     SPIFFS.remove(configPath);
     request->send(200, "text/plain", "Configuration reset...");
     delay(500);
-    ESP.restart();
   });
 
   // Enable AP mode for initial setup
@@ -182,30 +241,55 @@ void setupWebUI() {
 
 
 
-void logCommand(String ip, String command) {
+String escapeJSON(String s) {
+  String result = "";
+
+  for (unsigned int i = 0; i < s.length(); i++) {
+    char c = s[i];
+    if (c >= 32 || c == '\n' || c == '\r') {
+      switch (c) {
+        case '\\': result += "\\\\"; break;
+        case '\"': result += "\\\""; break;
+        case '\n': result += "\\n"; break;
+        case '\r': result += "\\r"; break;
+        default: result += c; break;
+      }
+    }
+  }
+
+  return result;
+}
+
+void logCommand(String ip, uint16_t port, String command) {
   File logFile = SPIFFS.open(logPath, FILE_APPEND);
   if (logFile) {
-    logFile.println("[" + String(millis()) + "] IP: " + ip + " - Command: " + command);
+    logFile.println("[" + String(millis()) + "] IP: " + ip + " - Port: " + String(port) + " - Command: " + command);
     logFile.close();
   }
 
-  Serial.println("IP: " + ip + " | CMD: " + command);
+  Serial.println("IP: " + ip + " | Port: " + String(port) + " | CMD: " + command + "|Escaped " + escapeJSON(command));
 
   // Affichage sur l'écran de l'AtomS3
   M5.Lcd.setCursor(0, 0);
   M5.Lcd.fillScreen(BLACK);
   M5.Lcd.setTextSize(1);
   M5.Lcd.setTextColor(GREEN, BLACK);
-  M5.Lcd.println("== Telnet Honeypot ==");
+  M5.Lcd.println("== Honeypot Event ==");
   M5.Lcd.setTextColor(WHITE, BLACK);
   M5.Lcd.printf("IP: %s\n", ip.c_str());
+  M5.Lcd.printf("Port: %u\n", port);
   M5.Lcd.printf("CMD:\n%s\n", command.c_str());
 
   if (WiFi.status() == WL_CONNECTED && WebhookURL.length() > 0) {
     HTTPClient http;
     http.begin(WebhookURL);
     http.addHeader("Content-Type", "application/json");
-    String msg = "{\"content\":\"📡 **Honeypot**\\n🔍 IP: " + ip + "\\n💻 Command: `" + command + "`\"}";
+
+    String msg = "{\"content\":\"📡 **Honeypot**\\n🔍 IP: " + ip +
+                 "\\n📌 Port: " + String(port) +
+                 "\\n💻 Command: " + escapeJSON(command) +
+                 "\\n__________________________\"}";
+
     http.POST(msg);
     http.end();
   }
@@ -225,18 +309,57 @@ String readLine(WiFiClient &client, bool echo = false) {
   return line;
 }
 
+String dumpBytes(WiFiClient &c, size_t maxLen = 256, uint32_t timeout = 250) {
+  String s;
+  unsigned long t0 = millis();
+  while (millis() - t0 < timeout && s.length() < maxLen && c.connected()) {
+    while (c.available() && s.length() < maxLen) {
+      uint8_t b = c.read();
+      if (isprint(b) || b == '\r' || b == '\n')
+        s += (char)b;
+      else {
+        char buf[5];
+        sprintf(buf, "\\x%02X", b);
+        s += buf;
+      }
+    }
+    delay(1);
+  }
+  return s.length() ? s : "(no data)";
+}
+
+void handleBannerGrab(WiFiClient client, uint16_t port, const char* banner) {
+  if (!client.connected()) return;
+  String ip = client.remoteIP().toString();
+  String payload = dumpBytes(client);
+  client.write((const uint8_t*)banner, strlen(banner));
+  delay(50);
+  client.stop();
+  logCommand(ip, port, payload);
+}
+
+void handleBannerGrab(WiFiClient client, uint16_t port, const uint8_t* banner, size_t len) {
+  if (!client.connected()) return;
+  String ip = client.remoteIP().toString();
+  String payload = dumpBytes(client);
+  client.write(banner, len);
+  delay(50);
+  client.stop();
+  logCommand(ip, port, payload);
+}
+
 
 // -- Handle interaction with a single Telnet client --
 void handleHoneypotClient(WiFiClient client) {
     // Prompt pour le login
     client.print("\r\nlogin: ");
     String username = readLine(client, false);  // pas d'écho
-    logCommand(client.remoteIP().toString(), "LOGIN username: " + username);
+    logCommand(client.remoteIP().toString(), 23, "LOGIN username: " + username);
   
     // Prompt pour le password
     client.print("Password: ");
     String password = readLine(client, false);
-    logCommand(client.remoteIP().toString(), "LOGIN password: " + password);
+    logCommand(client.remoteIP().toString(), 23, "LOGIN password: " + password);
   
     // Simulation d’un login réussi (peu importe les identifiants)
     client.println("\r\nWelcome to Ubuntu 20.04.5 LTS (GNU/Linux 5.4.0-109-generic x86_64)");
@@ -254,7 +377,7 @@ void handleHoneypotClient(WiFiClient client) {
       command.trim();
   
       // Log de la commande
-      logCommand(client.remoteIP().toString(), command);
+      logCommand(client.remoteIP().toString(), 23, command);
   
       //------------------------------------------------
       // 1. Commandes de sortie
@@ -792,13 +915,178 @@ void handleHoneypotClient(WiFiClient client) {
 
 
 void honeypotLoop() {
-  WiFiClient client = honeypotServer.available();
-  if (client) handleHoneypotClient(client);
+  auto isEnabled = [](uint16_t port) {
+    return std::find(enabledPorts.begin(), enabledPorts.end(), port) != enabledPorts.end();
+  };
+
+  if (isEnabled(23)) {
+    if (WiFiClient c = honeypotServer.available()) {
+      const uint8_t telnetNegotiation[] = {255, 251, 1, 255, 251, 3, 255, 253, 3};
+      c.write(telnetNegotiation, sizeof(telnetNegotiation));
+      delay(10);
+      handleHoneypotClient(c);
+    }
+  }
+
+  if (isEnabled(21)) {
+    if (WiFiClient c = ftpServer.available())
+      handleBannerGrab(c, 21, "220 ProFTPD 1.3.7c Server (Debian) [::ffff:192.168.1.10]\r\n");
+  }
+
+  if (isEnabled(22)) {
+    if (WiFiClient c = sshServer.available()) {
+      if (!c) return;
+      String ip = c.remoteIP().toString();
+      c.print("SSH-2.0-OpenSSH_8.5p1 Debian-1\r\n");
+      logCommand(ip, 22, dumpBytes(c));
+      unsigned long t0 = millis();
+      while (c.connected() && millis() - t0 < 3000) delay(1);
+      c.stop();
+    }
+  }
+
+  if (isEnabled(25)) {
+    if (WiFiClient c = smtpServer.available())
+      handleBannerGrab(c, 25, "220 mail.local ESMTP Exim 4.94.2\r\n");
+  }
+
+  if (isEnabled(110)) {
+    if (WiFiClient c = pop3Server.available())
+      handleBannerGrab(c, 110, "+OK Dovecot ready.\r\n");
+  }
+
+  if (isEnabled(143)) {
+    if (WiFiClient c = imapServer.available())
+      handleBannerGrab(c, 143, "* OK [CAPABILITY IMAP4rev1 LITERAL+ SASL-IR LOGIN-REFERRALS ID ENABLE IDLE] Dovecot ready.\r\n");
+  }
+
+  if (isEnabled(443)) {
+    if (WiFiClient c = httpServer.available())
+      handleBannerGrab(
+        c, 443,
+        "HTTP/1.1 200 OK\r\n"
+        "Server: Apache/2.4.52 (Debian)\r\n"
+        "Content-Type: text/html\r\n"
+        "Content-Length: 44\r\n\r\n"
+        "<html><body><h1>It works!</h1></body></html>");
+  }
+
+  if (isEnabled(5900)) {
+    if (WiFiClient c = vncServer.available())
+      handleBannerGrab(c, 5900, "RFB 003.008\n");
+  }
+
+  if (isEnabled(53)) {
+    if (WiFiClient c = dnsServer.available()) {
+      uint8_t query[514];
+      int n = c.read(query, sizeof(query));
+      if (n < 14) {
+        c.stop();
+        return;
+      }
+
+      uint16_t id = (query[2] << 8) | query[3];
+      static uint8_t dnsResp[] = {
+        0x00, 0x00, 0x81, 0x80, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00,
+        0x07, 'v', 'e', 'r', 's', 'i', 'o', 'n', 0x04, 'b', 'i', 'n', 'd', 0x00,
+        0x00, 0x10, 0x00, 0x03, 0xC0, 0x0C, 0x00, 0x10, 0x00, 0x03, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x07, 0x06, '9', '.', '1', '6', '.', '3'
+      };
+      dnsResp[0] = id >> 8;
+      dnsResp[1] = id & 0xFF;
+
+      uint16_t dnsLen = sizeof(dnsResp);
+      uint8_t tcp[dnsLen + 2];
+      tcp[0] = dnsLen >> 8; tcp[1] = dnsLen & 0xFF;
+      memcpy(tcp + 2, dnsResp, dnsLen);
+
+      handleBannerGrab(c, 53, tcp, dnsLen + 2);
+    }
+  }
+
+  if (isEnabled(445)) {
+    if (WiFiClient c = smbServer.available()) {
+      static const uint8_t SMB_CORE[] = {
+        0xFF, 0x53, 0x4D, 0x42, 0x72, 0x00, 0x00, 0x00,
+        0x88, 0x07, 0xC8, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x11, 0x02, 0x00, 0x01, 0x00, 0x20,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 'W', 'i', 'n', '7', ' ', 'L', 'M', ' ', '0', '.', '1', '2', 0x00
+      };
+      uint32_t len = sizeof(SMB_CORE);
+      uint8_t pkt[len + 4];
+      pkt[0] = 0x00; pkt[1] = (len >> 16) & 0xFF; pkt[2] = (len >> 8) & 0xFF; pkt[3] = len & 0xFF;
+      memcpy(pkt + 4, SMB_CORE, len);
+      handleBannerGrab(c, 445, pkt, len + 4);
+    }
+  }
+
+  if (isEnabled(3306)) {
+    if (WiFiClient c = mysqlServer.available()) {
+      static const uint8_t MYSQL_PAY[] = {
+        0x0A, '5', '.', '7', '.', '3', '3', 0x00,
+        0x08, 0x00, 0x00, 0x00,
+        'r', 'a', 'n', 'd', 's', 'a', 'l', 't', 0x00,
+        0xFF, 0xF7, 0x08, 0x02, 0x00, 0xFF, 0xC7, 0x15,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        'r', 'a', 'n', 'd', 's', 'a', 'l', 't', '2', 0x00,
+        'm', 'y', 's', 'q', 'l', '_', 'n', 'a', 't', 'i', 'v', 'e', '_', 'p', 'a', 's', 's', 'w', 'o', 'r', 'd', 0x00
+      };
+      uint8_t pkt[sizeof(MYSQL_PAY) + 4];
+      pkt[0] = sizeof(MYSQL_PAY) & 0xFF;
+      pkt[1] = (sizeof(MYSQL_PAY) >> 8) & 0xFF;
+      pkt[2] = (sizeof(MYSQL_PAY) >> 16) & 0xFF;
+      pkt[3] = 0x00;
+      memcpy(pkt + 4, MYSQL_PAY, sizeof(MYSQL_PAY));
+      handleBannerGrab(c, 3306, pkt, sizeof(pkt));
+    }
+  }
+
+  if (isEnabled(3389)) {
+    if (WiFiClient c = rdpServer.available()) {
+      static const uint8_t RDP_CC[] = {
+        0x03, 0x00, 0x00, 0x13,
+        0x0E, 0xD0, 0x00, 0x00,
+        0x12, 0x34, 0x00, 0x02,
+        0x00, 0x08, 0x00
+      };
+      handleBannerGrab(c, 3389, RDP_CC, sizeof(RDP_CC));
+    }
+  }
+
+  if (isEnabled(8080)) {
+    if (WiFiClient c = ahttpServer.available())
+      handleBannerGrab(
+        c, 8080,
+        "HTTP/1.1 200 OK\r\n"
+        "Server: Apache/2.4.52 (Debian)\r\n"
+        "Content-Type: text/html\r\n"
+        "Content-Length: 44\r\n\r\n"
+        "<html><body><h1>It works!</h1></body></html>");
+  }
 }
 
 void startHoneypot() {
-  honeypotServer.begin();
-  Serial.println("[+] Honeypot Telnet active on port 23");
+  auto tryBegin = [](uint16_t port, WiFiServer & srv) {
+    if (std::find(enabledPorts.begin(), enabledPorts.end(), port) != enabledPorts.end()) {
+      srv.begin();
+      Serial.println("[+] Honeypot port enabled: " + String(port));
+    }
+  };
+  tryBegin(21,  ftpServer);
+  tryBegin(22,  sshServer);
+  tryBegin(23,  honeypotServer);
+  tryBegin(25,  smtpServer);
+  tryBegin(53,  dnsServer);
+  tryBegin(110, pop3Server);
+  tryBegin(143, imapServer);
+  tryBegin(443, httpServer);
+  tryBegin(445, smbServer);
+  tryBegin(3306, mysqlServer);
+  tryBegin(3389, rdpServer);
+  tryBegin(5900, vncServer);
+  tryBegin(8080, ahttpServer);
+
   while (true) {
     honeypotLoop();
     delay(10);
