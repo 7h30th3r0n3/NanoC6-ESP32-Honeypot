@@ -63,9 +63,23 @@ Tested and confirmed working on:
 - **M5Stack AtomS3**: [Buy here](https://s.click.aliexpress.com/e/_DnDXSKJ) or [Buy here](https://shop.m5stack.com/products/atoms3-dev-kit-w-0-85-inch-screen?ref=7h30th3r0n3)
 - **M5Stack Atom Lite**: [Buy here](https://s.click.aliexpress.com/e/_Dm0e95D)
 - **ESP32-C3** (with external antenna): [Buy here](https://s.click.aliexpress.com/e/_DD1yibp) (Be carefull to select sets WITH antenna) 
+- **M5Stack StopWatch** (466x466 round AMOLED, full on-screen SIEM dashboard): see the `StopWatch-Honeypot-SIEM` folder
 
 Any ESP32 Dev Board should work (e.g. DevKitC, NodeMCU-32S, Wemos D1 R32)  
 please report no working devices 
+
+---
+
+## 🕹️ StopWatch SIEM edition
+
+The `StopWatch-Honeypot-SIEM` folder is a dedicated build for the M5Stack StopWatch (ESP32-S3, 466x466 round AMOLED). It runs the same 14 port decoys and the full web dashboard, plus a complete circular SIEM UI directly on the watch screen, always on:
+
+- Views: overview (60 min radial ring, port donut, threat counter, intrusion ping), system status, weekly heatmap (7d x 24h radial), port activity, top attackers, live feed, per event detail. Button driven navigation (BtnA cycles views, BtnB scrolls and selects, PWR back), touch as a bonus.
+- Storage: event journal in PSRAM (ring of 6000) with persistence on the 9.9 MB FAT partition (up to 40000 events) plus aggregated stats, all surviving reboot.
+- Web UI on port 80 (dashboard + `/setup` config page) stays available on the always on access point at 192.168.4.1, and the watch joins your LAN when configured.
+- Non blocking honeypot handlers and USB CDC so the on-screen navigation stays smooth while under attack.
+
+Build: Arduino, board M5Stack StampS3, 16MB flash, partition `app3M_fat9M_16MB`, OPI PSRAM. Needs M5Unified, ESP Async WebServer and Async TCP.
 
 ---
 
